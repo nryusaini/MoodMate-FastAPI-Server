@@ -2,98 +2,74 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Optional
 import pandas as pd
-import numpy as np
-import random 
-
-# -----------------------------------------------------------------------------------------
-# 1. DEFINE DATA MODELS (MUST match Java models)
-# -----------------------------------------------------------------------------------------
 
 class MoodEntry(BaseModel):
-    # Core fields from Logmood
-    mood_score: int
+    mood_score: int # Emoji 1-5
     hours_sleep: float
     social_tag: str
     activity_type: str
     
-    # NEW FIELDS: Psychological Assessment Scores
-    # These are Optional for now, but will be populated when you implement the quizzes.
-    shs_score: Optional[float] = None     # Subjective Happiness Scale (Daily)
-    panas_score: Optional[float] = None   # PANAS-SF (Weekly)
-    ohq_score: Optional[float] = None     # Oxford Happiness Questionnaire (Monthly)
+    # Updated to handle PA and NA separately for Weekly
+    shs_score: Optional[float] = None     # Daily (1.0 - 7.0)
+    panas_pa: Optional[int] = None        # Weekly Positive (5 - 25)
+    panas_na: Optional[int] = None        # Weekly Negative (5 - 25)
+    ohq_score: Optional[float] = None     # Monthly (1.0 - 6.0)
 
-# The Incoming Request Body - A list of MoodEntry objects (the last 7 days of logs)
 class MoodHistory(BaseModel):
     history: List[MoodEntry] 
 
-# -----------------------------------------------------------------------------------------
-# 2. INITIALIZE APPLICATION
-# -----------------------------------------------------------------------------------------
-
 app = FastAPI(title="MoodMate Analysis API")
-
-# -----------------------------------------------------------------------------------------
-# 3. ANALYSIS ENDPOINT (The Core Logic)
-# -----------------------------------------------------------------------------------------
 
 @app.post("/api/v1/analyze_mood")
 def calculate_mood_correlation(history_data: MoodHistory):
-    
     entries = history_data.history
     
-    # Check if we have enough data (need at least 2 points for meaningful correlation)
-    if len(entries) < 2:
-        return {
-            "insight_text": f"Log {2 - len(entries)} more entry(s) to start correlation analysis.",
-            "correlation_score": 0.0
-        }
+    if len(entries) < 1:
+        return {"insight_text": "Start logging to see your analysis!", "correlation_score": 0.0}
 
-    # 1. Data Preparation for Pandas (Using ONLY the real history data)
-    # Extract lists of scores and sleep hours from the incoming history list
-    mood_scores = [entry.mood_score for entry in entries]
-    sleep_hours = [entry.hours_sleep for entry in entries]
-    
-    # Create DataFrame
-    df = pd.DataFrame({
-        'mood_score': mood_scores,
-        'hours_sleep': sleep_hours
-    })
+    # Convert to DataFrame for analysis
+    df = pd.DataFrame([e.dict() for e in entries])
 
-    # 2. Correlation Analysis
-    try:
-        # Calculate the correlation between mood score and sleep hours
-        sleep_correlation = df['mood_score'].corr(df['hours_sleep'])
-    except Exception:
-        # Handle case where correlation fails (e.g., all values are the same)
-        sleep_correlation = 0.0
+    # 1. Basic Sleep Correlation (Existing Logic)
+    sleep_corr = df['mood_score'].corr(df['hours_sleep']) if len(df) > 1 else 0.0
+
+    # 2. NEW: Scientific Validation Check
+    # We compare the Emoji Mood (1-5) with SHS (1-7)
+    latest = entries[-1]
+    validation_text = ""
     
-    # 3. Determine Personalized Insight based on the LATEST data
-    # Calculate the average mood and sleep for better context
-    avg_mood = df['mood_score'].mean()
-    
-    # Determine Insight Text
-    if sleep_correlation > 0.4: 
-        insight_text = f"Great news! Strong positive link (r={sleep_correlation:.2f}) between your mood and sleep. Maintain your current sleep habits!"
-    elif sleep_correlation < -0.4:
-        insight_text = f"Warning: Negative link (r={sleep_correlation:.2f}) between your mood and sleep. You may feel happier on less sleep. Review your schedule!"
-    else:
-        insight_text = f"Mood and sleep have a weak correlation (r={sleep_correlation:.2f}). Consistency is key for clearer patterns."
+    if latest.shs_score is not None:
+        # Normalize scores to 100% for comparison
+        emoji_pct = (latest.mood_score / 5) * 100
+        shs_pct = (latest.shs_score / 7) * 100
         
-    # Add context based on the latest logged mood score (to confirm inputs are seen)
-    latest_mood = entries[-1].mood_score
-    if latest_mood <= 2:
-        insight_text = f"Your latest mood was low (Score {latest_mood}). " + insight_text
-    elif latest_mood == 5:
-        insight_text = f"You are feeling joyful! " + insight_text
+        if abs(emoji_pct - shs_pct) < 15:
+            validation_text = "Your daily log strongly aligns with your happiness assessment. "
+        else:
+            validation_text = "Your quick log differs from your assessment; you might be feeling complex emotions today. "
 
+    # 3. NEW: Weekly Affect Analysis
+    weekly_text = ""
+    if latest.panas_pa is not None and latest.panas_na is not None:
+        if latest.panas_pa > latest.panas_na:
+            weekly_text = "Your positive emotions are leading this week! "
+        else:
+            weekly_text = "You've had a heavy emotional load this week. "
 
-    # 4. Return Structured Response
+    # 4. Final Insight Construction
+    base_insight = f"Sleep correlation: {sleep_corr:.2f}. "
+    if sleep_corr > 0.5:
+        base_insight += "Quality sleep is clearly boosting your mood."
+    
+    full_insight = validation_text + weekly_text + base_insight
+
     return {
-        "insight_text": insight_text,
-        "correlation_score": float(sleep_correlation)
+        "insight_text": full_insight.strip(),
+        "correlation_score": float(sleep_corr),
+        "latest_shs": latest.shs_score,
+        "weekly_status": "Positive" if latest.panas_pa and latest.panas_pa > latest.panas_na else "Mixed"
     }
 
-# --- Simple GET Endpoint (Used for initial testing only) ---
 @app.get("/")
 def read_root():
-    return {"Hello": "MoodMate API is running and ready for POST requests."}
+    return {"status": "MoodMate API is connected to Render and ready."}
